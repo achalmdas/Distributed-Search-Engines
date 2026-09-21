@@ -1,0 +1,17 @@
+[
+  {"doc_id": 1, "title": "Introduction to Distributed Systems", "body": "A distributed system is a collection of independent computers that appears to its users as a single coherent system. Key concerns are scalability, dependability, and resource sharing."},
+  {"doc_id": 2, "title": "Client-Server Architecture", "body": "In the client-server model a client sends a request to a server, which processes it and returns a response. Most web applications follow this pattern."},
+  {"doc_id": 3, "title": "Peer-to-Peer Networks", "body": "Peer-to-peer systems have no central server. Every node can act as both client and server, which improves fault tolerance but complicates coordination."},
+  {"doc_id": 4, "title": "How Search Engines Index the Web", "body": "A search engine crawls pages, tokenizes their text, and builds an inverted index that maps each term to the documents containing it. Queries are answered by looking up terms in this index."},
+  {"doc_id": 5, "title": "Inverted Index Explained", "body": "An inverted index stores, for every word, a list of document ids where that word appears. This makes keyword search fast even across millions of documents."},
+  {"doc_id": 6, "title": "TCP vs UDP", "body": "TCP provides reliable, ordered delivery with connection setup, while UDP is connectionless and faster but offers no delivery guarantees. Network programmers choose based on the application's needs."},
+  {"doc_id": 7, "title": "HTTP and REST APIs", "body": "REST APIs expose resources over HTTP using verbs like GET and POST. JSON is the most common message format for request and response bodies."},
+  {"doc_id": 8, "title": "Sharding and Partitioning", "body": "Sharding splits a large dataset across multiple nodes so each node holds only a fraction. A search engine can shard its index so queries are answered in parallel by many index nodes."},
+  {"doc_id": 9, "title": "Replication for Fault Tolerance", "body": "Replicating data on several nodes means the system keeps working when one node fails. The trade-off is keeping replicas consistent."},
+  {"doc_id": 10, "title": "Load Balancing", "body": "A load balancer distributes incoming requests across a pool of servers to improve throughput and avoid overloading any single machine."},
+  {"doc_id": 11, "title": "Synchronous vs Asynchronous Systems", "body": "In a synchronous model there are known bounds on message delay and processing time. Asynchronous models make no such assumptions, which is more realistic for the internet."},
+  {"doc_id": 12, "title": "Logging in Distributed Systems", "body": "Because requests cross many processes, each log line should carry a request id so a single user query can be traced end to end across services."},
+  {"doc_id": 13, "title": "PageRank Basics", "body": "PageRank scores web pages by the number and quality of links pointing to them. Google originally used it to rank search results."},
+  {"doc_id": 14, "title": "Caching Query Results", "body": "Popular queries can be cached so repeated searches are served without hitting the index nodes again, reducing latency and load."},
+  {"doc_id": 15, "title": "Python FastAPI Quickstart", "body": "FastAPI is a Python web framework for building APIs quickly. It validates JSON request bodies with pydantic models and generates interactive docs automatically."}
+]
