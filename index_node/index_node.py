@@ -35,14 +35,57 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8001
 NODE_ID = f"index-{PORT}"
 NUM_WORKERS = 4
  
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
+# ---------------------------------------------------------------- logging
+
+LOG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "logs"
+)
+
+# Create the logs folder if it doesn't exist
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# Each index node gets its own log file
+LOG_FILE = os.path.join(
+    LOG_DIR,
+    f"{NODE_ID}.log"
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+
 log = logging.getLogger(NODE_ID)
  
 # ---------------------------------------------------------------- shared state
 DATA_FILE = os.path.join(os.path.dirname(__file__), "data", "documents.json")
+
 with open(DATA_FILE) as f:
-    DOCS = json.load(f)
-log.info("Loaded %d documents", len(DOCS))
+    ALL_DOCS = json.load(f)
+
+# Determine which shard this process owns based on its port.
+# 8001 -> shard 0
+# 8002 -> shard 1
+# 8003 -> shard 2
+SHARD_ID = PORT - 8001
+NUM_SHARDS = 3
+
+DOCS = [
+    doc for doc in ALL_DOCS
+    if doc["doc_id"] % NUM_SHARDS == SHARD_ID
+]
+
+log.info(
+    "Loaded shard %d with %d documents: %s",
+    SHARD_ID,
+    len(DOCS),
+    [doc["doc_id"] for doc in DOCS]
+)
  
 requests_handled = 0                 
 counter_lock = threading.Lock()      # protects requests_handled (critical section)

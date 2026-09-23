@@ -4,7 +4,7 @@ CECS 327 - Distributed Search Engine, Milestone 1
 
 The gateway is the middle process in this communication path:
 
-    Client (127.0.0.1:8000) -> Gateway -> Index Node (127.0.0.1:8001)
+    Client (127.0.0.1:8000) -> Gateway -> Index Nodes (127.0.0.1:8001 - 8003)
 
 Messages are newline-terminated JSON objects. The gateway validates each client
 request, forwards it to the index node, and returns the node's response to the
@@ -19,23 +19,44 @@ import json
 import logging
 import socket
 import threading
+import os
 from typing import Any
 
 
 GATEWAY_HOST = "127.0.0.1"
 GATEWAY_PORT = 8000
 
-INDEX_NODE_HOST = "127.0.0.1"
-INDEX_NODE_PORT = 8001
+INDEX_NODES = [
+    ("127.0.0.1", 8001),
+    ("127.0.0.1", 8002),
+    ("127.0.0.1", 8003),
+]
 
 SOCKET_TIMEOUT_SECONDS = 5
 MAX_MESSAGE_BYTES = 1_000_000
 
 
+LOG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "logs"
+)
+
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOG_FILE = os.path.join(
+    LOG_DIR,
+    "gateway.log"
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
 )
+
 log = logging.getLogger("gateway-8000")
 
 
@@ -106,29 +127,101 @@ def validate_index_response(
     return response
 
 
-def query_index_node(request: dict[str, str]) -> dict[str, Any]:
-    """Forward a validated request to the backend index node."""
+def query_index_node(
+    request: dict[str, str],
+    host: str,
+    port: int
+) -> dict[str, Any]:
+    """Send a request to one index shard."""
+
     log.info(
         "FORWARD to index node %s:%d: %s",
-        INDEX_NODE_HOST,
-        INDEX_NODE_PORT,
+        host,
+        port,
         request,
     )
 
     with socket.create_connection(
-        (INDEX_NODE_HOST, INDEX_NODE_PORT), timeout=SOCKET_TIMEOUT_SECONDS
+        (host, port),
+        timeout=SOCKET_TIMEOUT_SECONDS
     ) as index_socket:
+
         index_socket.settimeout(SOCKET_TIMEOUT_SECONDS)
+
         send_json_message(index_socket, request)
+
         try:
             response = receive_json_message(index_socket)
+
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
             raise IndexNodeError(
-                f"index node returned an invalid JSON message: {error}"
+                f"index node {port} returned invalid JSON: {error}"
             ) from error
 
-    log.info("RECEIVED from index node: %s", response)
-    return validate_index_response(response, request["request_id"])
+    log.info(
+        "RECEIVED from index node %s:%d: %s",
+        host,
+        port,
+        response,
+    )
+
+    return validate_index_response(
+        response,
+        request["request_id"]
+    )
+
+def query_all_index_nodes(request: dict[str, str]) -> dict[str, Any]:
+    """Query all index shards in parallel and merge their results."""
+
+    results = []
+    threads = []
+    lock = threading.Lock()
+
+    def query_node(host, port):
+        try:
+            response = query_index_node(
+                request,
+                host,
+                port
+            )
+
+            with lock:
+                results.extend(response["results"])
+
+        except Exception as error:
+            log.error(
+                "Shard %s:%d failed: %s",
+                host,
+                port,
+                error
+            )
+
+    # Start all shard requests at approximately the same time
+    for host, port in INDEX_NODES:
+
+        thread = threading.Thread(
+            target=query_node,
+            args=(host, port)
+        )
+
+        thread.start()
+        threads.append(thread)
+
+    # Wait until all shards have answered
+    for thread in threads:
+        thread.join()
+
+    # Sort combined results by score
+    results.sort(
+        key=lambda result: result.get("score", 0),
+        reverse=True
+    )
+
+    # Return one combined response
+    return {
+        "request_id": request["request_id"],
+        "results": results[:10]
+    }
 
 
 def make_error_response(
@@ -158,7 +251,7 @@ def handle_client(client_socket: socket.socket, client_address: tuple[str, int])
 
             request = validate_client_request(raw_request)
             request_id = request["request_id"]
-            response = query_index_node(request)
+            response = query_all_index_nodes(request)
 
         except ClientRequestError as error:
             log.warning("INVALID request from %s: %s", client_address, error)
@@ -213,12 +306,11 @@ def main() -> None:
     server_socket.listen()
 
     log.info(
-        "Gateway listening on %s:%d; forwarding to %s:%d",
-        GATEWAY_HOST,
-        GATEWAY_PORT,
-        INDEX_NODE_HOST,
-        INDEX_NODE_PORT,
-    )
+    "Gateway listening on %s:%d; forwarding to index nodes: %s",
+    GATEWAY_HOST,
+    GATEWAY_PORT,
+    INDEX_NODES,
+)
 
     try:
         while True:
