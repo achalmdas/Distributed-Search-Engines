@@ -31,7 +31,21 @@ The Client connects to:
 File:
 `gateway/gateway.py`
 
-# TODO
+The Gateway:
+
+- Listens for client connections on `127.0.0.1:8000`.
+- Validates the client's request ID and search query.
+- Forwards valid requests to the Index Node on `127.0.0.1:8001`.
+- Returns the Index Node's search results to the Client.
+- Logs messages received, forwarded, and returned.
+- Handles invalid requests, connection failures, and timeouts.
+- Supports multiple client connections using threads.
+
+Run from the repository root:
+
+```bash
+python3 gateway/gateway.py
+```
 
 ### Index Node / Backend Data Service
 File:
