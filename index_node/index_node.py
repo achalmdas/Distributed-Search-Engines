@@ -167,6 +167,11 @@ def search(query):
 
 
 # ---------------------------------------------------------------- index updates
+def owns(doc):
+    """True if this doc belongs to our shard (same rule used at startup)."""
+    return doc["doc_id"] % NUM_SHARDS == SHARD_ID
+
+
 def store_doc(doc):
     for i, existing in enumerate(DOCS):
         if existing["doc_id"] == doc["doc_id"]:
@@ -187,6 +192,7 @@ def apply_update(update):
       applied   - it was next in line, so it and anything waiting went in
       buffered  - it arrived early, we hold it until its turn (total order)
       duplicate - we already have it, ignore it (reliable multicast resends)
+      not_mine  - the doc belongs to another shard, so we only count it
     """
     global next_update_id
     update_id = update.get("update_id")
@@ -202,9 +208,13 @@ def apply_update(update):
         holdback[update_id] = doc
         status = "buffered"
         while next_update_id in holdback:
-            store_doc(holdback.pop(next_update_id))
+            ready = holdback.pop(next_update_id)
+            if owns(ready):                       # every node keeps the order,
+                store_doc(ready)                  # but only stores its own shard
             next_update_id += 1
             status = "applied"
+        if status == "applied" and not owns(doc):
+            status = "not_mine"
         return status
 
 
