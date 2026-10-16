@@ -28,7 +28,11 @@ Message formats (one JSON object per line, newline-terminated):
   update   gateway -> node : {"msg_type": "index_update", "update_id": 1, "ts": 1.0,
                               "doc": {"doc_id": 16, "title": "...", "body": "..."}}
            node -> gateway : {"msg_type": "ack", "update_id": 1, "node_id": "index-8001",
-                              "doc_count": 16, "digest": "a1b2c3d4", "status": "applied"}
+                              "doc_count": 16, "digest": "a1b2c3d4e5f6", "status": "applied",
+                              "next_update_id": 2}
+  status   coordinator -> node : {"msg_type": "status"}
+           node -> coordinator : {"msg_type": "status_reply", "node_id": "index-8001",
+                              "doc_count": 5, "digest": "...", "next_update_id": 2}
   event    broker -> node  : {"msg_type": "publish", "topic": "index.updates",
                               "payload": {... an index_update ...}}
   error    node -> gateway : {"msg_type": "error", "request_id": "1",
@@ -181,9 +185,13 @@ def store_doc(doc):
 
 
 def digest():
-    """Short hash of our doc ids, so the gateway can compare replicas."""
-    ids = ",".join(str(d["doc_id"]) for d in DOCS)
-    return hashlib.md5(ids.encode()).hexdigest()[:8]
+    """Short hash of our documents (ids AND contents, sorted by doc_id).
+    Same algorithm as common/protocol.docs_digest, so the coordinator can
+    compare a shard's digest with the replicas' digest for the same shard.
+    Call with docs_lock held."""
+    ordered = sorted(DOCS, key=lambda d: d["doc_id"])
+    blob = json.dumps(ordered, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:12]
 
 
 def apply_update(update):
@@ -238,9 +246,9 @@ def handle_search(request):
 def handle_index_update(update):
     status = apply_update(update)
     with docs_lock:
-        doc_count, doc_digest = len(DOCS), digest()
-    log.info("UPDATE update_id=%s status=%s doc_count=%d digest=%s",
-             update.get("update_id"), status, doc_count, doc_digest)
+        doc_count, doc_digest, next_id = len(DOCS), digest(), next_update_id
+    log.info("UPDATE update_id=%s status=%s doc_count=%d digest=%s next_update_id=%d",
+             update.get("update_id"), status, doc_count, doc_digest, next_id)
 
     return {
         "msg_type": "ack",
@@ -249,7 +257,14 @@ def handle_index_update(update):
         "doc_count": doc_count,
         "digest": doc_digest,
         "status": status,
+        "next_update_id": next_id,      # lets the coordinator replay what we missed
     }
+
+
+def handle_status():
+    with docs_lock:
+        return {"msg_type": "status_reply", "node_id": NODE_ID, "doc_count": len(DOCS),
+                "digest": digest(), "next_update_id": next_update_id}
 
 
 def handle(conn, addr):
@@ -263,6 +278,8 @@ def handle(conn, addr):
             response = handle_search(request)
         elif msg_type == "index_update":
             response = handle_index_update(request)
+        elif msg_type == "status":
+            response = handle_status()
         elif msg_type == "ping":
             response = {"msg_type": "pong", "node_id": NODE_ID}
         else:
@@ -307,13 +324,16 @@ def subscribe_once():
         for line in sock.makefile("r"):
             if not line.strip():
                 continue
-            event = unmarshal(line)
-            log.info("EVENT on %s: %s", event.get("topic", TOPIC), event)
+            try:
+                event = unmarshal(line)
+                log.info("EVENT on %s: %s", event.get("topic", TOPIC), event)
 
-            update = event.get("payload", event)
-            if update.get("msg_type") == "index_update":
-                status = apply_update(update)      # ignores repeats from the multicast
-                log.info("EVENT update_id=%s status=%s", update.get("update_id"), status)
+                update = event.get("payload", event)
+                if update.get("msg_type") == "index_update":
+                    status = apply_update(update)  # ignores repeats from the multicast
+                    log.info("EVENT update_id=%s status=%s", update.get("update_id"), status)
+            except (ValueError, AttributeError) as e:   # bad event: skip it, stay subscribed
+                log.warning("Ignoring bad event (%s): %r", e, line[:200])
 
 
 def subscriber():

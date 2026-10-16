@@ -20,8 +20,11 @@ import logging
 import socket
 import threading
 import os
+import sys
 from typing import Any
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import coordinator  # Milestone 2: update / replication / pub-sub coordinator
 
 GATEWAY_HOST = "127.0.0.1"
 GATEWAY_PORT = 8000
@@ -249,9 +252,13 @@ def handle_client(client_socket: socket.socket, client_address: tuple[str, int])
             if isinstance(raw_request.get("request_id"), str):
                 request_id = raw_request["request_id"]
 
-            request = validate_client_request(raw_request)
-            request_id = request["request_id"]
-            response = query_all_index_nodes(request)
+            if raw_request.get("msg_type") in ("update", "status"):
+                # Milestone 2: group communication (updates, replication, status)
+                response = coordinator.handle(raw_request)
+            else:
+                request = validate_client_request(raw_request)
+                request_id = request["request_id"]
+                response = query_all_index_nodes(request)
 
         except ClientRequestError as error:
             log.warning("INVALID request from %s: %s", client_address, error)
@@ -270,7 +277,7 @@ def handle_client(client_socket: socket.socket, client_address: tuple[str, int])
             )
 
         except ConnectionRefusedError:
-            log.error("INDEX NODE unavailable at %s:%d", INDEX_NODE_HOST, INDEX_NODE_PORT)
+            log.error("INDEX NODE unavailable")
             response = make_error_response(
                 request_id, "index node is unavailable", "backend_unavailable"
             )
