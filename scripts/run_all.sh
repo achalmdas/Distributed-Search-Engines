@@ -41,7 +41,7 @@ echo "All services running. Logs are in logs/. In another terminal you can run:"
 echo "  python3 scripts/send_update.py 16 \"Raft\" \"leader election and log replication\""
 echo "  python3 scripts/status.py"
 echo ""
-echo "Starting client (type your query when prompted):"
+echo "Starting client (pick 1 to search, 2 to add/update a document, 3 for sync status, 4 to quit):"
 echo ""
 python3 client/client.py
 
