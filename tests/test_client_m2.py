@@ -42,6 +42,22 @@ class ClientMilestone2Tests(unittest.TestCase):
             self.assertEqual(request["msg_type"], "status")
             self.assertIn("request_id", request)
 
+    def test_p2p_requests_match_gateway(self):
+        with patch.object(client, "exchange_message", return_value={"ok": True}) as exchange:
+            client.send_p2p_search("  distributed systems ")
+            request, _ = exchange.call_args.args
+            self.assertEqual(request["msg_type"], "p2p_search")
+            self.assertEqual(request["query"], "distributed systems")
+            client.send_p2p_ring()
+            request, _ = exchange.call_args.args
+            self.assertEqual(request["msg_type"], "p2p_ring")
+            self.assertIn("request_id", request)
+
+    def test_empty_p2p_query_does_not_send(self):
+        with patch.object(client, "exchange_message") as exchange:
+            self.assertIsNone(client.send_p2p_search("   "))
+            exchange.assert_not_called()
+
     def test_invalid_inputs_do_not_send(self):
         with patch.object(client, "exchange_message") as exchange:
             self.assertIsNone(client.send_request("  "))

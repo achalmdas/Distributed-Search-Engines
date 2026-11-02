@@ -1,5 +1,5 @@
 @echo off
-REM Starts the broker, 3 index shards, 3 replicas and the gateway (each in its
+REM Starts the broker, 3 index shards, 3 replicas, 4 P2P peers and the gateway (each in its
 REM own console window), then runs the client here. Run from the repo root:
 REM   scripts\run_all.bat
 cd /d "%~dp0.."
@@ -12,11 +12,20 @@ for %%p in (8001 8002 8003) do start "shard %%p" python index_node\index_node.py
 for %%p in (8011 8012 8013) do start "replica %%p" python replica\replica.py %%p
 timeout /t 2 /nobreak >nul
 
+start "peer 9101" python p2p\peer.py 9101
+timeout /t 1 /nobreak >nul
+for %%p in (9102 9103 9104) do (
+  start "peer %%p" python p2p\peer.py %%p --join 9101
+  timeout /t 1 /nobreak >nul
+)
+timeout /t 2 /nobreak >nul
+python scripts\p2p_cli.py publish 9101 >nul
+
 start "gateway 8000" python gateway\gateway.py
 timeout /t 2 /nobreak >nul
 
 echo.
-echo All services started. Pick 1 to search, 2 to add/update a document, 3 for sync status, 4 to quit.
+echo All services started. Pick 1 to search, 2 to add/update a document, 3 for sync status, 4 or 5 for the peer-to-peer overlay, 6 to quit.
 echo.
 python client\client.py
 

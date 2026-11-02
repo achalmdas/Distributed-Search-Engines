@@ -7,10 +7,13 @@ Run from the repository root:
     python3 client/client.py --search "distributed systems"
     python3 client/client.py --update 16 "Raft Consensus" "leader election and log replication"
     python3 client/client.py --status
+    python3 client/client.py --p2p-search "distributed systems"
+    python3 client/client.py --p2p-ring
     python3 client/client.py --search "distributed systems" --show-wire
 
 The client talks ONLY to the gateway at 127.0.0.1:8000. The gateway
-handles index shards, group replication, and publication to the broker.
+handles index shards, group replication, publication to the broker, and
+(Milestone 3) lookups through the peer-to-peer overlay.
 All TCP messages use the shared common.protocol format: one UTF-8 JSON
 object terminated by a newline.
 """
@@ -117,6 +120,21 @@ def send_status(show_wire=False):
     return exchange_message(request, show_wire)
 
 
+def send_p2p_search(query, show_wire=False):
+    """Milestone 3: search through the peer-to-peer overlay (via the gateway)."""
+    if not isinstance(query, str) or not query.strip():
+        log.error("Search query cannot be empty.")
+        return None
+    request = {"request_id": str(uuid.uuid4()), "msg_type": "p2p_search", "query": query.strip()}
+    return exchange_message(request, show_wire)
+
+
+def send_p2p_ring(show_wire=False):
+    """Milestone 3: ask the overlay for the list of peers in ring order."""
+    request = {"request_id": str(uuid.uuid4()), "msg_type": "p2p_ring"}
+    return exchange_message(request, show_wire)
+
+
 def display_error(response):
     """Print errors returned by the gateway. True if one was present."""
     if response is None:
@@ -201,19 +219,59 @@ def display_status(response):
     print("\nAll members synchronized:", "YES" if response.get("in_sync") else "NO")
 
 
+def path_text(path, owner):
+    """Peers a lookup passed through, ending at the owner of the key."""
+    ports = [f"{p['port']} (id {p['id']})" for p in path]
+    if not path or path[-1]["id"] != owner["id"]:
+        ports.append(f"{owner['port']} (id {owner['id']})")
+    return " -> ".join(ports)
+
+
+def display_p2p_search(response):
+    """Show how each query word was routed through the ring, then the results."""
+    if display_error(response):
+        return
+    if response.get("msg_type") != "p2p_search_result":
+        log.error("Unexpected P2P search response: %s", response)
+        return
+    print(f"\nPeer-to-peer search (entry peer {response.get('entry_peer')})")
+    for lookup in response.get("lookups", []):
+        state = "found" if lookup.get("found") else "no such term"
+        print(f"  '{lookup['word']}' key id {lookup['key_id']}: "
+              f"{path_text(lookup['path'], lookup['owner'])}  ({state})")
+    display_results({"results": response.get("results", [])})
+
+
+def display_p2p_ring(response):
+    """List the peers in ring order with their neighbours and key counts."""
+    if display_error(response):
+        return
+    if response.get("msg_type") != "p2p_ring_result":
+        log.error("Unexpected P2P ring response: %s", response)
+        return
+    members = response.get("members", [])
+    print(f"\nPeer-to-peer ring ({len(members)} peers, clockwise, found through peer {response.get('entry_peer')})")
+    print(f"  {'port':<6} {'id':<4} {'predecessor':<12} {'successor':<10} {'keys':<5} owned")
+    for m in members:
+        print(f"  {m['port']:<6} {m['id']:<4} {str(m['predecessor']):<12} {str(m['successor']):<10} "
+              f"{m['keys_total']:<5} {m['keys_owned']}")
+
+
 def interactive_menu(show_wire=False):
     """Give the user access to search, update, and status in one client."""
     print("===============================")
-    print(" Distributed Search Engine M2")
+    print(" Distributed Search Engine M3")
     print("===============================")
 
     while True:
         print("\n1. Search documents")
         print("2. Add or update a document")
         print("3. Check synchronization status")
-        print("4. Exit")
+        print("4. Search through the peer-to-peer overlay")
+        print("5. Show the peer-to-peer ring")
+        print("6. Exit")
         try:
-            choice = input("Choose an option (1-4): ").strip()
+            choice = input("Choose an option (1-6): ").strip()
             if choice == "1":
                 display_results(send_request(input("Enter a search query: "), show_wire))
             elif choice == "2":
@@ -229,22 +287,28 @@ def interactive_menu(show_wire=False):
             elif choice == "3":
                 display_status(send_status(show_wire))
             elif choice == "4":
+                display_p2p_search(send_p2p_search(input("Enter a search query: "), show_wire))
+            elif choice == "5":
+                display_p2p_ring(send_p2p_ring(show_wire))
+            elif choice == "6":
                 print("Client exited.")
                 break
             else:
-                print("Invalid option; choose 1, 2, 3, or 4.")
+                print("Invalid option; choose 1, 2, 3, 4, 5, or 6.")
         except (EOFError, KeyboardInterrupt):
             print("\nClient exited.")
             break
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Distributed search engine Milestone 2 client")
+    parser = argparse.ArgumentParser(description="Distributed search engine Milestone 3 client")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--search", metavar="QUERY", help="submit one search query and exit")
     action.add_argument("--update", nargs=3, metavar=("DOC_ID", "TITLE", "BODY"),
                         help="submit one document update and exit")
     action.add_argument("--status", action="store_true", help="show replica/shard status and exit")
+    action.add_argument("--p2p-search", metavar="QUERY", help="search through the peer-to-peer overlay and exit")
+    action.add_argument("--p2p-ring", action="store_true", help="show the peers in the overlay ring and exit")
     parser.add_argument("--show-wire", action="store_true",
                         help="show the Python dictionary, marshalled bytes, and unmarshalled result")
     args = parser.parse_args()
@@ -264,6 +328,14 @@ def main():
     if args.status:
         response = send_status(args.show_wire)
         display_status(response)
+        return 0 if response is not None and "error" not in response else 1
+    if args.p2p_search is not None:
+        response = send_p2p_search(args.p2p_search, args.show_wire)
+        display_p2p_search(response)
+        return 0 if response is not None and "error" not in response else 1
+    if args.p2p_ring:
+        response = send_p2p_ring(args.show_wire)
+        display_p2p_ring(response)
         return 0 if response is not None and "error" not in response else 1
     interactive_menu(args.show_wire)
     return 0
