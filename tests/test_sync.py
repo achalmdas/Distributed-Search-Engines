@@ -9,6 +9,8 @@ Starts the broker, 3 index shards, 3 replicas and the gateway, then checks:
   - changing an existing document changes the digests (and they still match)
   - a crashed shard and a crashed replica are reported, and are caught up
     with the updates they missed after they restart
+  - after the gateway alone restarts, new updates get fresh update_ids and
+    are applied (not mistaken for duplicates)
 
 Run from the repo root:
     python3 tests/test_sync.py
@@ -128,6 +130,22 @@ def main():
         check(any(x["doc_id"] == 17 for x in search("paxos")), "the update made while 8002 and 8013 were down is searchable")
         st = gw({"msg_type": "status"})
         check(st["in_sync"], "status: every member is at update 5 and digests match")
+        watermark = r["update_id"]
+
+        step("6. Gateway restarts; new updates continue past members' watermark")
+        stop("gateway")
+        time.sleep(0.5)
+        start("gateway", "gateway/gateway.py")
+        time.sleep(1.5)
+        r = update(19, "Vector Clocks", "Vector clocks detect causality between events")
+        check(r["update_id"] > watermark,
+              f"post-restart update_id={r['update_id']} continues past watermark {watermark}")
+        check(all_ack(r), "all 6 members acked the post-restart update")
+        check(r["in_sync"], "digests match after gateway restart")
+        check(any(x["doc_id"] == 19 for x in search("vector")),
+              "new document after gateway restart is searchable (not skipped as duplicate)")
+        st = gw({"msg_type": "status"})
+        check(st["in_sync"], "status: members still in sync after gateway restart")
 
         print("\nALL SYNC TESTS PASSED")
     finally:

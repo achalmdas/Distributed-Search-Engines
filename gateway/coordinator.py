@@ -13,6 +13,10 @@ Handles "update" and "status" requests from clients:
   4. compare digests: replicas must match each other, and each shard must
      match the replicas' digest for that shard
 
+On startup, recover_from_members() asks every live member for its
+next_update_id so a restarted gateway continues the sequence instead of
+reusing low IDs that members would treat as duplicates.
+
 Client -> gateway:
     {"request_id": "..", "msg_type": "update", "doc": {"doc_id": 16, "title": "..", "body": ".."}}
     {"request_id": "..", "msg_type": "status"}
@@ -33,12 +37,36 @@ TIMEOUT = 2.0
 log = logging.getLogger("coordinator")
 
 _lock = threading.Lock()          # one update at a time = total order
-_update_log = []                  # _update_log[i] is update_id i+1
+_update_log = {}                  # update_id -> index_update message (this process only)
+_next_update_id = 1               # next id to assign (may be recovered past members' watermark)
 _next = {p: 1 for p in MEMBERS}   # next update_id each member still needs
 
 
 def _name(port):
     return f"index-{port}" if port in SHARD_PORTS else f"replica-{port}"
+
+
+def recover_from_members():
+    """Learn each member's cursor so we do not reuse update_ids after a restart."""
+    global _next_update_id
+    high_water = 0
+    recovered = 0
+    with _lock:
+        for port in MEMBERS:
+            try:
+                reply = request_reply(HOST, port, make_message("status"), TIMEOUT)
+                nxt = reply.get("next_update_id", 1)
+                if not isinstance(nxt, int) or nxt < 1:
+                    continue
+                _next[port] = nxt
+                high_water = max(high_water, nxt - 1)
+                recovered += 1
+                log.info("RECOVER %s next_update_id=%d", _name(port), nxt)
+            except (OSError, ValueError, ConnectionError) as error:
+                log.warning("RECOVER %s unreachable: %s", _name(port), error)
+        _next_update_id = high_water + 1
+        log.info("RECOVERED high_water=%d next_update_id=%d from %d members",
+                 high_water, _next_update_id, recovered)
 
 
 def _send_to_member(port, upto, result):
@@ -47,9 +75,16 @@ def _send_to_member(port, upto, result):
     while _next[port] <= upto and tries < 2 * upto + 2:
         tries += 1
         uid = _next[port]
+        msg = _update_log.get(uid)
+        if msg is None:
+            log.error("GROUP %s needs update_id=%d which this gateway no longer has",
+                      _name(port), uid)
+            result[port] = {"status": "failed",
+                            "error": f"update_id {uid} not in this gateway's log"}
+            return
         try:
             log.info("GROUP SEND update_id=%d to %s", uid, _name(port))
-            reply = request_reply(HOST, port, _update_log[uid - 1], TIMEOUT)
+            reply = request_reply(HOST, port, msg, TIMEOUT)
         except (OSError, ValueError, ConnectionError) as error:
             log.error("GROUP %s unreachable: %s", _name(port), error)
             result[port] = {"status": "failed", "error": str(error)}
@@ -97,15 +132,17 @@ def _check_sync(result):
 
 
 def handle_update(request):
+    global _next_update_id
     doc = request.get("doc")
     if (not isinstance(doc, dict) or not isinstance(doc.get("doc_id"), int)
             or not isinstance(doc.get("title"), str) or not isinstance(doc.get("body"), str)):
         return {"request_id": request.get("request_id"), "error": "doc needs int doc_id, str title, str body",
                 "error_type": "invalid_request"}
     with _lock:
-        update_id = len(_update_log) + 1
+        update_id = _next_update_id
+        _next_update_id += 1
         msg = make_message("index_update", update_id=update_id, doc=doc)
-        _update_log.append(msg)
+        _update_log[update_id] = msg
         log.info("UPDATE update_id=%d doc_id=%d title=%r -> multicast to %d members",
                  update_id, doc["doc_id"], doc["title"], len(MEMBERS))
 
@@ -144,7 +181,7 @@ def handle_status(request):
         except (OSError, ValueError, ConnectionError) as error:
             result[port] = {"status": "down", "error": str(error)}
     with _lock:
-        expected = len(_update_log) + 1
+        expected = _next_update_id
     caught_up = all(r.get("next_update_id") == expected for r in result.values() if r["status"] == "ack")
     in_sync = _check_sync(result) and caught_up
     def slim(port):

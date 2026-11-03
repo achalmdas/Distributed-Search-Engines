@@ -23,8 +23,9 @@ The automated tests start their own services, so stop `run_all` first (ports 800
 | 9 | Publisher to many subscribers | Same update as test 8 | "Pub-sub event delivered to: 6 subscriber(s)" |
 | 10 | New document is searchable | `python3 client/client.py --search "raft"` | Doc 16 is in the results |
 | 11 | Status check | `python3 client/client.py --status` | Same digest on all three replicas, "All members synchronized: YES" |
-| 12 | Full sync test | `python3 tests/test_sync.py` | Ends with `ALL SYNC TESTS PASSED` (covers baseline, update, edit, crash, catch-up) |
+| 12 | Full sync test | `python3 tests/test_sync.py` | Ends with `ALL SYNC TESTS PASSED` (covers baseline, update, edit, crash, catch-up, gateway restart) |
 | 13 | Replica crash and recovery | Stop the process on 8013, send an update (shows 8013 `failed`, "synchronized: NO"), restart `python3 replica/replica.py 8013`, send another update | 8013 catches up, all digests match, "synchronized: YES" |
+| 13b | Gateway restart | Stop only the gateway, restart it, send a new update with a fresh doc_id | New `update_id` continues past the old watermark; all members ack and apply it; digests stay in sync |
 | 14 | Single index node | Start `python3 index_node/index_node.py 8001`, then `python3 tests/test_index_node.py` (do not run the real broker) | Ack, ordering, duplicate and broker-event checks pass |
 
 ## Milestone 3: peer-to-peer overlay

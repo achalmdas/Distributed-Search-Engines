@@ -311,6 +311,9 @@ def handle_client(client_socket: socket.socket, client_address: tuple[str, int])
 
 def main() -> None:
     """Start the gateway and accept client connections until interrupted."""
+    # Continue update_ids past any live members' watermarks after a restart.
+    coordinator.recover_from_members()
+
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind((GATEWAY_HOST, GATEWAY_PORT))
