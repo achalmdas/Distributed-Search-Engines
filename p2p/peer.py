@@ -232,7 +232,9 @@ class Peer:
             if merge and isinstance(value, dict) and isinstance(self.store.get(key), dict):
                 self.store[key].update(value)
             else:
-                self.store[key] = value
+                self.store[key] = dict(value) if isinstance(value, dict) else value
+            if merge and isinstance(self.store[key], dict):          # None = this doc no longer has the word
+                self.store[key] = {k: v for k, v in self.store[key].items() if v is not None}
             return self.store[key]
 
     def put_key(self, key, value, merge=False, bulk=False):
@@ -263,16 +265,16 @@ class Peer:
                           key, key_id, fmt(owner), fmt_path(hops, owner))
         return owner, hops
 
-    def fetch(self, key):
+    def fetch(self, key, quiet=False):
         """Look up key and read it from the owner. Returns (value or None, owner, hops)."""
         last = None
         for _ in range(3):
-            owner, hops = self.lookup_key(key)
+            owner, hops = self.lookup_key(key, quiet)
             if owner["id"] == self.id:
                 with self.lock:
                     return self.store.get(key), owner, hops
             try:
-                reply = self.rpc(owner, "get", key=key)
+                reply = self.rpc(owner, "get", quiet=quiet, key=key)
                 return (reply["value"] if reply.get("found") else None), owner, hops
             except (OSError, ProtocolError) as error:
                 last = error
@@ -530,11 +532,18 @@ class Peer:
         postings = {}
         placed = Counter()
         for doc in docs:
+            try:                                            # an edit: the old version may already be in the ring
+                old, _, _ = self.fetch(f"doc:{doc['doc_id']}", quiet=True)
+            except OverlayError:
+                old = None
             owner = self.put_key(f"doc:{doc['doc_id']}", doc, bulk=True)
             placed[owner["port"]] += 1
             counts = Counter(tokenize(doc["title"] + " " + doc["body"]))
             for word, count in counts.items():
                 postings.setdefault(word, {})[str(doc["doc_id"])] = {"title": doc["title"], "count": count}
+            if old:
+                for word in set(tokenize(old["title"] + " " + old["body"])) - set(counts):
+                    postings.setdefault(word, {})[str(doc["doc_id"])] = None    # drop it from that word
         for word, post in postings.items():
             owner = self.put_key("term:" + word, post, merge=True, bulk=True)
             placed[owner["port"]] += 1

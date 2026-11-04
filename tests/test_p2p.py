@@ -11,6 +11,7 @@ Starts real peer processes (python3 p2p/peer.py) on ports 9101-9105 and checks:
   6. a peer leaves gracefully: its keys are handed over and searches still work
   7. a peer crashes (killed): the ring repairs itself and replicas keep the data available
   8. a joining peer with an id that is already taken is refused
+  9. a document added or edited through the client (gateway) reaches the overlay
 
 Run from the repository root with nothing running on ports 8000 and 9101-9109:
     python3 tests/test_p2p.py
@@ -249,6 +250,20 @@ def main():
             code = None
         check(code == 1, "the duplicate id was rejected and the peer exited")
         check(ring_ok(ports), "the ring is unchanged")
+
+        print("\n=== 9. A document added or edited through the client also reaches the overlay")
+        def gw_update(doc_id, title, body):
+            return request_reply(HOST, 8000, {"request_id": f"u{doc_id}{len(body)}", "msg_type": "update",
+                                              "doc": {"doc_id": doc_id, "title": title, "body": body}}, 30)
+        r = gw_update(16, "Raft", "Leader election and log replication")
+        check(r.get("p2p_updated") is True, "the gateway copied the new document into the ring")
+        hits = [d["doc_id"] for d in ask(ports[0], "search", query="raft")["results"]]
+        check(hits == [16], "a P2P search for 'raft' finds the new document 16")
+        r = gw_update(16, "Raft", "Consensus with a single leader")
+        hits_old = [d["doc_id"] for d in ask(ports[0], "search", query="election")["results"]]
+        hits_new = [d["doc_id"] for d in ask(ports[0], "search", query="consensus")["results"]]
+        check(16 not in hits_old and 16 in hits_new,
+              "after an edit, words the document lost no longer find it and its new words do")
     finally:
         stop_all()
 

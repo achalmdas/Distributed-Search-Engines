@@ -21,6 +21,7 @@ import logging
 import threading
 
 from common.protocol import make_message, request_reply
+import p2p_bridge   # Milestone 3: copy updates into the peer-to-peer overlay
 
 HOST = "127.0.0.1"
 SHARD_PORTS = [8001, 8002, 8003]
@@ -118,6 +119,7 @@ def handle_update(request):
             t.join()
 
         delivered = _publish(update_id, msg)
+        p2p_updated = p2p_bridge.publish_doc(doc)      # Milestone 3: the ring gets the update too
         in_sync = _check_sync(result)
         acks = sum(1 for r in result.values() if r["status"] == "ack")
         log.info("GROUP RESULT update_id=%d acks=%d/%d in_sync=%s event_delivered_to=%d",
@@ -129,7 +131,7 @@ def handle_update(request):
             "owner_shard": SHARD_PORTS[doc["doc_id"] % len(SHARD_PORTS)],
             "shards": {str(p): slim(p) for p in SHARD_PORTS},
             "replicas": {str(p): slim(p) for p in REPLICA_PORTS},
-            "event_delivered_to": delivered, "in_sync": in_sync}
+            "event_delivered_to": delivered, "in_sync": in_sync, "p2p_updated": p2p_updated}
 
 
 def handle_status(request):
