@@ -202,6 +202,8 @@ def display_update_result(response):
     display_members(response.get("replicas"), "Replicas (group communication)")
     print("\nPub-sub event delivered to:", response.get("event_delivered_to", "Unknown"), "subscriber(s)")
     print("All members synchronized:", "YES" if response.get("in_sync") else "NO")
+    if "p2p_updated" in response:
+        print("Peer-to-peer overlay updated:", "YES" if response["p2p_updated"] else "NO (no peers running)")
     print("Note: The broker's delivery count records successful sends, not durable receipt.")
 
 

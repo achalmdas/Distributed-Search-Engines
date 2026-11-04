@@ -38,6 +38,22 @@ def _entry_peer():
     raise P2PUnavailable("no peer in the P2P overlay is running")
 
 
+def publish_doc(doc):
+    """Store an added or edited document in the overlay. False if no peer is running."""
+    try:
+        entry = _entry_peer()
+        reply = request_reply(HOST, entry, make_message("publish", docs=[doc]), TIMEOUT)
+        ok = reply.get("msg_type") == "publish_result"
+        log.info("P2P publish doc_id=%s through peer %d: %s", doc.get("doc_id"), entry, "ok" if ok else reply)
+        return ok
+    except P2PUnavailable:
+        log.warning("P2P publish skipped: no peer is running")
+        return False
+    except (OSError, ValueError, KeyError) as error:
+        log.error("P2P publish failed: %s", error)
+        return False
+
+
 def _error(request, text, kind):
     return {"request_id": request.get("request_id"), "error": text, "error_type": kind}
 
