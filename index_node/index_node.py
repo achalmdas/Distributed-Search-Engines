@@ -37,6 +37,13 @@ Message formats (one JSON object per line, newline-terminated):
                               "payload": {... an index_update ...}}
   error    node -> gateway : {"msg_type": "error", "request_id": "1",
                               "error": "...", "error_type": "bad_request"}
+
+Milestone 4 (coordination, see coordination.py):
+  - every node keeps a Lamport clock; every reply and node-to-node message
+    carries it as "lamport_ts", and log lines start with "[L=<n>]"
+  - the nodes elect a leader with the Bully algorithm
+  - the leader runs a centralized lock that protects shared/search_stats.json,
+    which every shard updates after each search
 """
 
 import hashlib
@@ -49,6 +56,10 @@ import socket
 import sys
 import threading
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import lamport          # Milestone 4: logical clock
+import coordination     # Milestone 4: leader election + mutual exclusion
 
 # ---------------------------------------------------------------- config
 HOST = "0.0.0.0"
@@ -235,6 +246,7 @@ def handle_search(request):
     if not isinstance(query, str) or not query:
         raise ValueError("query must be a non-empty string")
 
+    coordination.record_search(query)   # shared stats file, written under the distributed lock
     return {
         "msg_type": "results",
         "request_id": request_id,
@@ -271,10 +283,15 @@ def handle(conn, addr):
     global requests_handled
     try:
         request = read_message(conn)
-        log.info("RECEIVED from %s: %s", addr, request)
-
         msg_type = request.get("msg_type", "search")   # no msg_type means search
-        if msg_type == "search":
+        stamp = lamport.receive(request.get("lamport_ts"))
+        quiet = msg_type == "heartbeat"                 # sent every second, not logged
+        if not quiet:
+            log.info("[L=%d] RECEIVED from %s: %s", stamp, addr, request)
+
+        if msg_type in coordination.HANDLERS:
+            response = coordination.handle(request)
+        elif msg_type == "search":
             response = handle_search(request)
         elif msg_type == "index_update":
             response = handle_index_update(request)
@@ -285,8 +302,10 @@ def handle(conn, addr):
         else:
             raise ValueError(f"unknown msg_type: {msg_type}")
 
+        response["lamport_ts"] = lamport.tick()
         conn.sendall(marshal(response))
-        log.info("SENT to %s: %s", addr, response.get("msg_type"))
+        if not quiet:
+            log.info("[L=%d] SENT to %s: %s", response["lamport_ts"], addr, response.get("msg_type"))
 
         with counter_lock:                        # critical section
             requests_handled += 1
@@ -297,7 +316,8 @@ def handle(conn, addr):
             conn.sendall(marshal({"msg_type": "error",
                                   "node_id": NODE_ID,
                                   "error": str(e),
-                                  "error_type": type(e).__name__}))
+                                  "error_type": type(e).__name__,
+                                  "lamport_ts": lamport.tick()}))
         except OSError:
             pass                                  # client already gone
     finally:
@@ -362,6 +382,7 @@ def main():
     server.bind((HOST, PORT))
     server.listen()
     log.info("%s listening on %s:%d with %d workers", NODE_ID, HOST, PORT, NUM_WORKERS)
+    coordination.start(PORT, log)                 # Milestone 4: elect a leader
 
     while True:                                   # main thread accept and enqueue
         conn, addr = server.accept()
