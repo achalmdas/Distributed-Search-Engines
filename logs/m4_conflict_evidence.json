@@ -1,0 +1,164 @@
+{
+  "captured_at_utc": "2026-11-13T01:40:47.918+00:00",
+  "checks": {
+    "distinct_total_order_ids": true,
+    "final_replica_and_shard_agreement": true,
+    "two_successful_acknowledged_updates": true
+  },
+  "client_verification_passed": true,
+  "clients": [
+    {
+      "client": "A",
+      "exit_code": 0,
+      "gateway_reply": {
+        "event_delivered_to": 6,
+        "in_sync": true,
+        "msg_type": "update_result",
+        "owner_shard": 8002,
+        "p2p_updated": true,
+        "replicas": {
+          "8011": {
+            "digest": "16879d188d95",
+            "doc_count": 16,
+            "status": "ack"
+          },
+          "8012": {
+            "digest": "16879d188d95",
+            "doc_count": 16,
+            "status": "ack"
+          },
+          "8013": {
+            "digest": "16879d188d95",
+            "doc_count": 16,
+            "status": "ack"
+          }
+        },
+        "request_id": "66e066b2-eca1-4f67-920f-ae2ed045a609",
+        "shards": {
+          "8001": {
+            "digest": "0dbe45f9640e",
+            "doc_count": 5,
+            "status": "ack"
+          },
+          "8002": {
+            "digest": "1f3c77e1b07e",
+            "doc_count": 6,
+            "status": "ack"
+          },
+          "8003": {
+            "digest": "e8a1b3bc6f7b",
+            "doc_count": 5,
+            "status": "ack"
+          }
+        },
+        "update_id": 1
+      },
+      "pid": 96296,
+      "update_id": 1
+    },
+    {
+      "client": "B",
+      "exit_code": 0,
+      "gateway_reply": {
+        "event_delivered_to": 6,
+        "in_sync": true,
+        "msg_type": "update_result",
+        "owner_shard": 8002,
+        "p2p_updated": true,
+        "replicas": {
+          "8011": {
+            "digest": "bd70e8b56185",
+            "doc_count": 16,
+            "status": "ack"
+          },
+          "8012": {
+            "digest": "bd70e8b56185",
+            "doc_count": 16,
+            "status": "ack"
+          },
+          "8013": {
+            "digest": "bd70e8b56185",
+            "doc_count": 16,
+            "status": "ack"
+          }
+        },
+        "request_id": "8b0d1e7c-73e7-4303-be2c-565a1adad4c0",
+        "shards": {
+          "8001": {
+            "digest": "0dbe45f9640e",
+            "doc_count": 5,
+            "status": "ack"
+          },
+          "8002": {
+            "digest": "7a6b75f52707",
+            "doc_count": 6,
+            "status": "ack"
+          },
+          "8003": {
+            "digest": "e8a1b3bc6f7b",
+            "doc_count": 5,
+            "status": "ack"
+          }
+        },
+        "update_id": 2
+      },
+      "pid": 96297,
+      "update_id": 2
+    }
+  ],
+  "document_id": 16,
+  "final_status": {
+    "in_sync": true,
+    "msg_type": "status_result",
+    "replicas": {
+      "8011": {
+        "digest": "bd70e8b56185",
+        "doc_count": 16,
+        "events_received": 2,
+        "next_update_id": 3,
+        "status": "ack"
+      },
+      "8012": {
+        "digest": "bd70e8b56185",
+        "doc_count": 16,
+        "events_received": 2,
+        "next_update_id": 3,
+        "status": "ack"
+      },
+      "8013": {
+        "digest": "bd70e8b56185",
+        "doc_count": 16,
+        "events_received": 2,
+        "next_update_id": 3,
+        "status": "ack"
+      }
+    },
+    "request_id": "2d35d158-9fa2-40d3-958d-e555cb9e52f3",
+    "shards": {
+      "8001": {
+        "digest": "0dbe45f9640e",
+        "doc_count": 5,
+        "events_received": null,
+        "next_update_id": 3,
+        "status": "ack"
+      },
+      "8002": {
+        "digest": "7a6b75f52707",
+        "doc_count": 6,
+        "events_received": null,
+        "next_update_id": 3,
+        "status": "ack"
+      },
+      "8003": {
+        "digest": "e8a1b3bc6f7b",
+        "doc_count": 5,
+        "events_received": null,
+        "next_update_id": 3,
+        "status": "ack"
+      }
+    }
+  },
+  "gateway": "127.0.0.1:8000",
+  "limitations": "Client observations do not prove distributed mutual exclusion. Correlate with server REQUEST/GRANT/RELEASE logs.",
+  "scenario": "two_client_write_contention"
+}
