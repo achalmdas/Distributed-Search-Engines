@@ -62,7 +62,7 @@ import lamport          # Milestone 4: logical clock
 import coordination     # Milestone 4: leader election + mutual exclusion
 
 # ---------------------------------------------------------------- config
-HOST = "0.0.0.0"
+HOST = "127.0.0.1"                 # local only, like the other services
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8001
 NODE_ID = f"index-{PORT}"
 NUM_WORKERS = 4
@@ -282,6 +282,7 @@ def handle_status():
 def handle(conn, addr):
     global requests_handled
     try:
+        conn.settimeout(5)                        # a client that never finishes its message cannot block a worker
         request = read_message(conn)
         msg_type = request.get("msg_type", "search")   # no msg_type means search
         stamp = lamport.receive(request.get("lamport_ts"))

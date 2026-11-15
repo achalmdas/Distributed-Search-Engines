@@ -25,7 +25,7 @@ start "gateway 8000" python gateway\gateway.py
 timeout /t 2 /nobreak >nul
 
 echo.
-echo All services started. Pick 1 to search, 2 to add/update a document, 3 for sync status, 4 or 5 for the peer-to-peer overlay, 6 to quit.
+echo All services started. 1 search, 2 add/update, 3 sync status, 4-5 peer-to-peer, 6-8 coordination, 9 quit.
 echo.
 python client\client.py
 

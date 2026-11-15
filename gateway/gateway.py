@@ -26,6 +26,7 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import coordinator  # Milestone 2: update / replication / pub-sub coordinator
 import p2p_bridge  # Milestone 3: peer-to-peer overlay
+import coord_bridge  # Milestone 4: leader and lock status of the index nodes
 
 GATEWAY_HOST = "127.0.0.1"
 GATEWAY_PORT = 8000
@@ -62,6 +63,29 @@ logging.basicConfig(
 )
 
 log = logging.getLogger("gateway-8000")
+
+
+class LamportClock:
+    """Milestone 4: the gateway's logical clock (send/local: +1, receive: max + 1)."""
+
+    def __init__(self):
+        self.time = 0
+        self.lock = threading.Lock()
+
+    def tick(self):
+        with self.lock:
+            self.time += 1
+            return self.time
+
+    def receive(self, timestamp):
+        with self.lock:
+            if isinstance(timestamp, int) and not isinstance(timestamp, bool):
+                self.time = max(self.time, timestamp)
+            self.time += 1
+            return self.time
+
+
+clock = LamportClock()
 
 
 class ClientRequestError(Exception):
@@ -152,6 +176,7 @@ def query_index_node(
 
         index_socket.settimeout(SOCKET_TIMEOUT_SECONDS)
 
+        request = dict(request, lamport_ts=clock.tick())      # Milestone 4: logical timestamp
         send_json_message(index_socket, request)
 
         try:
@@ -162,6 +187,7 @@ def query_index_node(
                 f"index node {port} returned invalid JSON: {error}"
             ) from error
 
+    clock.receive(response.get("lamport_ts"))
     log.info(
         "RECEIVED from index node %s:%d: %s",
         host,
@@ -248,7 +274,8 @@ def handle_client(client_socket: socket.socket, client_address: tuple[str, int])
 
         try:
             raw_request = receive_json_message(client_socket)
-            log.info("RECEIVED from client %s: %s", client_address, raw_request)
+            stamp = clock.receive(raw_request.get("lamport_ts"))
+            log.info("[L=%d] RECEIVED from client %s: %s", stamp, client_address, raw_request)
 
             if isinstance(raw_request.get("request_id"), str):
                 request_id = raw_request["request_id"]
@@ -259,6 +286,9 @@ def handle_client(client_socket: socket.socket, client_address: tuple[str, int])
             elif raw_request.get("msg_type") in ("p2p_search", "p2p_ring"):
                 # Milestone 3: lookup and search through the peer-to-peer overlay
                 response = p2p_bridge.handle(raw_request)
+            elif raw_request.get("msg_type") == "coord_status":
+                # Milestone 4: elected leader and lock state of the index nodes
+                response = coord_bridge.handle_status(raw_request, clock.tick)
             else:
                 request = validate_client_request(raw_request)
                 request_id = request["request_id"]
@@ -303,8 +333,10 @@ def handle_client(client_socket: socket.socket, client_address: tuple[str, int])
             )
 
         try:
+            response["sender_id"] = "gateway-8000"               # Milestone 4: every reply is timestamped
+            response["lamport_ts"] = clock.tick()
             send_json_message(client_socket, response)
-            log.info("SENT to client %s: %s", client_address, response)
+            log.info("[L=%d] SENT to client %s: %s", response["lamport_ts"], client_address, response)
         except OSError as error:
             log.error("Could not send response to client %s: %s", client_address, error)
 

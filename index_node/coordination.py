@@ -28,7 +28,7 @@ logs of all nodes can be merged into one ordered history.
 Message formats (one JSON object per line, newline-terminated):
   election     node -> higher node : {"msg_type": "election", "sender_id": "index-8001", "lamport_ts": 12}
                higher node -> node : {"msg_type": "election_ok", "node_id": "index-8002", "lamport_ts": 14}
-  coordinator  leader -> every node : {"msg_type": "coordinator", "sender_id": "index-8003", "lamport_ts": 20}
+  coordinator  leader -> every node : {"msg_type": "coordinator", "sender_id": "index-8003", "lamport_ts": 20, "term": 1}
   heartbeat    node -> leader       : {"msg_type": "heartbeat", "sender_id": "index-8001", "lamport_ts": 30}
   lock_request node -> leader       : {"msg_type": "lock_request", "sender_id": "index-8001", "lamport_ts": 41}
                leader -> node       : {"msg_type": "lock_granted"} or {"msg_type": "lock_queued", "position": 1}
@@ -40,6 +40,7 @@ Message formats (one JSON object per line, newline-terminated):
                node -> anyone       : {"msg_type": "coord_status_reply", "leader": 8003, "lamport_ts": 61, ...}
   stats_write  anyone -> node       : {"msg_type": "stats_write", "count": 10, "use_lock": true}
                node -> anyone       : {"msg_type": "stats_write_result", "writes": 10}
+  coord_crash  demo -> node         : {"msg_type": "coord_crash"}   (the node stops with no warning)
 """
 import json
 import os
@@ -60,7 +61,7 @@ LOCK_TIMEOUT = 20.0                 # give up waiting for the lock after this lo
 WORK_DELAY = 0.05                   # time spent inside the critical section (makes races visible)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHARED_FILE = os.path.join(ROOT, "shared", "search_stats.json")
+SHARED_FILE = os.environ.get("COORD_SHARED_FILE", os.path.join(ROOT, "shared", "search_stats.json"))
 
 NETWORK_ERRORS = (OSError, ConnectionError, ProtocolError, ValueError)
 
@@ -70,6 +71,7 @@ log = None
 
 state_lock = threading.Lock()        # protects everything below
 leader = None
+term = 0                             # election term: goes up by one with every new leader
 electing = False
 coordinator_seen = threading.Event()
 
@@ -188,14 +190,15 @@ def run_election(reason):
 
 
 def become_leader():
-    global leader, lock_holder, lock_queue
+    global leader, lock_holder, lock_queue, term
     event("ELECTION won: no higher node answered, collecting the lock state")
-    holder, queue = None, []
+    holder, queue, seen_term = None, [], 0
     for port in others():                                     # rebuild the lock after a failover
         try:
             reply = send(port, "lock_state")
         except NETWORK_ERRORS:
             continue
+        seen_term = max(seen_term, int(reply.get("term", 0)))
         if reply.get("holding"):
             holder = port
         elif reply.get("waiting"):
@@ -206,12 +209,13 @@ def become_leader():
         elif waiting:
             queue.append(PORT)
         leader, lock_holder, lock_queue = PORT, holder, deque(queue)
-    event("I AM THE LEADER (%s is the highest live node)", name(PORT))
+        term = max(term, seen_term) + 1                       # newer than any term a live node has seen
+    event("I AM THE LEADER (%s is the highest live node), term %d", name(PORT), term)
     event("LOCK STATE recovered: holder=%s queue=%s",
           name(holder) if holder else "none", [name(p) for p in queue])
     for port in others():
         try:
-            send(port, "coordinator")
+            send(port, "coordinator", term=term)
         except NETWORK_ERRORS:
             event("COORDINATOR: %s is down", name(port))
     coordinator_seen.set()
@@ -227,10 +231,11 @@ def on_election(msg):
 
 
 def on_coordinator(msg):
-    global leader, lock_holder, lock_queue
+    global leader, lock_holder, lock_queue, term
     sender = sender_port(msg)
     with state_lock:
         leader = sender
+        term = max(term, int(msg.get("term", 0)))
         if sender != PORT:
             lock_holder, lock_queue = None, deque()           # only the leader keeps lock state
     coordinator_seen.set()
@@ -302,7 +307,7 @@ def push_grant(node):
 
 def on_lock_state(msg):
     with state_lock:
-        return {"msg_type": "lock_state_reply", "holding": holding, "waiting": waiting}
+        return {"msg_type": "lock_state_reply", "holding": holding, "waiting": waiting, "term": term}
 
 
 # ---------------------------------------------------------------- mutual exclusion: requester side
@@ -426,13 +431,21 @@ def on_stats_write(msg):
 
 def on_coord_status(msg):
     with state_lock:
-        return {"msg_type": "coord_status_reply", "leader": leader, "electing": electing,
+        return {"msg_type": "coord_status_reply", "leader": leader, "term": term, "electing": electing,
+                "resource": os.path.relpath(SHARED_FILE, ROOT),
                 "holding": holding, "waiting": waiting,
                 "lock_holder": lock_holder, "lock_queue": list(lock_queue)}
 
 
 def on_heartbeat(msg):
     return {"msg_type": "heartbeat_ok"}
+
+
+def on_coord_crash(msg):
+    """Demo and test only: stop this node with no warning, like a crash."""
+    event("CRASH requested: stopping now without telling anyone")
+    threading.Timer(0.2, lambda: os._exit(1)).start()
+    return {"msg_type": "crashing"}
 
 
 # ---------------------------------------------------------------- request handling
@@ -446,6 +459,7 @@ HANDLERS = {
     "lock_state": on_lock_state,
     "coord_status": on_coord_status,
     "stats_write": on_stats_write,
+    "coord_crash": on_coord_crash,
 }
 
 

@@ -196,8 +196,8 @@ def send_p2p_ring(show_wire=False):
 def send_coord_status(show_wire=False):
     """M4: request the elected leader and mutual-exclusion state from gateway.
 
-    The M3 gateway does not implement this route yet. The server team must
-    register msg_type='coord_status' before the UI can display live status.
+    The gateway asks the index nodes 8001-8003 (gateway/coord_bridge.py) and
+    returns the leader they agree on, its term, and the lock state.
     """
     return exchange_message({"request_id": str(uuid.uuid4()), "msg_type": "coord_status"}, show_wire)
 
@@ -206,8 +206,8 @@ def display_coord_status(response):
     """Display the M4 status contract; do not infer unavailable coordinator state."""
     if response is not None and response.get("error_type") == "invalid_request" \
             and "query" in str(response.get("error", "")):
-        print("\nMilestone 4 coordination status is not supported by this gateway yet.")
-        print("Ask the gateway team to implement the 'coord_status' message route.")
+        print("\nThis gateway does not support coordination status (it is an older version).")
+        print("Use the Milestone 4 gateway, which answers 'coord_status'.")
         return
     if display_error(response):
         return
@@ -381,7 +381,7 @@ def demo_conflicting_updates(doc_id, show_wire=False, evidence_file=None):
     if passed:
         print("  Ordered update IDs:", sorted(ids))
         print("  After both updates: three replicas agree and all six members are caught up.")
-        print("  Server-side mutex GRANT/RELEASE and election evidence still REQUIRED.")
+        print("  The lock itself is shown in logs/index-8003.log (LOCK GRANTED / LOCK RELEASED lines).")
     else:
         print("  RESULT: not verified. Inspect gateway and replica logs.")
     write_evidence(evidence_file, record)
@@ -402,8 +402,8 @@ def current_leader(response):
 def observe_leader_change(seconds, evidence_file=None, poll_seconds=1.0):
     """Watch an M4 gateway report a DIFFERENT leader, then test read availability.
 
-    The server team must implement coord_status and actual election. This
-    client never kills a leader, performs elections, or claims lock safety.
+    The index nodes run the Bully election; the gateway reports the leader
+    through coord_status. This client only watches; it never kills a leader.
     """
     if seconds <= 0:
         log.error("Observation time must be greater than zero.")
@@ -456,7 +456,7 @@ def observe_leader_change(seconds, evidence_file=None, poll_seconds=1.0):
     write_evidence(evidence_file, record)
     if passed:
         print("Client observed leader replacement and a successful search request.")
-        print("Confirm actual Bully/Ring election events in server logs for full evidence.")
+        print("The election itself is in logs/index-800x.log (ELECTION and I AM THE LEADER lines).")
     return 0 if passed else 1
 
 
@@ -598,7 +598,7 @@ def interactive_menu(show_wire=False):
         print("5. Show the peer-to-peer ring")
         print("6. Show coordination / elected leader status (M4)")
         print("7. Demonstrate conflicting document updates (M4)")
-        print("8. Observe leader replacement (M4; needs server support)")
+        print("8. Observe leader replacement (M4; crash the leader from another terminal)")
         print("9. Exit")
         try:
             choice = input("Choose an option (1-9): ").strip()
@@ -656,11 +656,11 @@ def main():
     action.add_argument("--status", action="store_true", help="show replica/shard status and exit")
     action.add_argument("--p2p-search", metavar="QUERY", help="search through the peer-to-peer overlay and exit")
     action.add_argument("--p2p-ring", action="store_true", help="show the peers in the overlay ring and exit")
-    action.add_argument("--coord-status", action="store_true", help="show elected leader and mutex status (requires M4 gateway)")
+    action.add_argument("--coord-status", action="store_true", help="show the elected leader and the lock status of the index nodes")
     action.add_argument("--demo-conflict", type=int, metavar="DOC_ID",
                         help="launch two independent clients to update the same document")
     action.add_argument("--observe-leader", type=float, metavar="SECONDS",
-                        help="observe leader replacement and verify search service after failover (requires M4 gateway)")
+                        help="watch for a leader change (crash the leader from another terminal), then check search still works")
     parser.add_argument("--evidence-file", metavar="PATH",
                         help="save actual client-observed conflict/failover evidence as JSON")
     parser.add_argument("--result-json", action="store_true", help=argparse.SUPPRESS)
