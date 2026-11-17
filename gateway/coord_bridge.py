@@ -30,16 +30,17 @@ def name(port):
     return f"index-{port}"
 
 
-def handle_status(request, stamp):
+def handle_status(request, clock):
     """Ask every index node for its view; report the leader that the live nodes agree on."""
     nodes, views = [], {}
     for port in NODES:
         try:
             r = request_reply(HOST, port, {"msg_type": "coord_status", "sender_id": "gateway-8000",
-                                           "lamport_ts": stamp()}, TIMEOUT)
+                                           "lamport_ts": clock.tick()}, TIMEOUT)     # send: L + 1
         except (OSError, ValueError) as error:
             nodes.append({"id": name(port), "port": port, "up": False, "error": str(error)})
             continue
+        clock.receive(r.get("lamport_ts"))                     # receive: max(L, ts) + 1
         views[port] = r
         nodes.append({"id": name(port), "port": port, "up": True, "leader": r.get("leader"),
                       "term": r.get("term"), "lamport_ts": r.get("lamport_ts"),
