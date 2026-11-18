@@ -312,20 +312,22 @@ def verify_final_status(status, highest_update_id, winning_reply):
 def demo_conflicting_updates(doc_id, show_wire=False, evidence_file=None):
     """Run two competing CLIENT PROCESSES; check replies plus final sync state.
 
-    A pass is *not* proof of distributed mutex. Only server GRANT/RELEASE
-    records and a nonoverlapping critical-section trace can show that.
+    Each update acquires the elected leader's distributed lock (gateway-8000).
+    Client checks prove total order and replica agreement; LOCK GRANTED /
+    LOCK RELEASED lines in the leader's index log show mutual exclusion.
     """
     if type(doc_id) is not int or doc_id < 0:
         log.error("Document ID must be a non-negative integer.")
         return 1
     print(f"\nM4 contention demo: 2 client processes updating doc_id={doc_id}")
     print("Each writes a different version of the same shared document.")
+    print("The gateway acquires the distributed lock (gateway-8000-<token>) for each update.")
     record = {
         "scenario": "two_client_write_contention", "captured_at_utc": utc_now(),
         "document_id": doc_id, "gateway": f"{HOST}:{PORT}",
         "clients": [], "checks": {},
-        "limitations": "Client observations do not prove distributed mutual exclusion. "
-                       "Correlate with server REQUEST/GRANT/RELEASE logs."
+        "limitations": "Client checks verify ordered update_ids and replica agreement. "
+                       "Pair with leader logs showing LOCK GRANTED/RELEASED for gateway-8000-<token>."
     }
     children = []
     try:
@@ -381,7 +383,8 @@ def demo_conflicting_updates(doc_id, show_wire=False, evidence_file=None):
     if passed:
         print("  Ordered update IDs:", sorted(ids))
         print("  After both updates: three replicas agree and all six members are caught up.")
-        print("  The lock itself is shown in logs/index-8003.log (LOCK GRANTED / LOCK RELEASED lines).")
+        print("  Distributed lock: look for LOCK GRANTED/RELEASED to gateway-8000-<token>")
+        print("  in the elected leader's log (usually logs/index-8003.log while it leads).")
     else:
         print("  RESULT: not verified. Inspect gateway and replica logs.")
     write_evidence(evidence_file, record)

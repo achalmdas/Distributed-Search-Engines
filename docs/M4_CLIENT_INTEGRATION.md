@@ -7,7 +7,7 @@
 - A process-local, thread-safe **Lamport logical clock**. Every outgoing client request increments the counter and includes `sender_id` and integer `lamport_ts`. On receiving a reply, the counter becomes `max(local, reply.lamport_ts) + 1`; older gateways that omit timestamps still trigger a local receive increment. Logs include `CLOCK SEND` / `CLOCK RECEIVE`.
 - Existing Milestone 1–3 commands still work (`--search`, `--update`, `--status`, `--p2p-search`, `--p2p-ring`, `--show-wire`). The M3 gateway currently accepts the two additional JSON keys, but it **drops them** when forwarding ordinary search requests and **does not return logical timestamps**. This must be fixed by the server team.
 - `--coord-status`: reserved client request for elected leader and mutex information, **not supported by the M3 gateway yet**.
-- `--demo-conflict DOC_ID`: launches two separate **client processes** concurrently to update the *same* document ID. Distinct ordered update IDs alone are **not proof** of distributed mutual exclusion; coordinator GRANT and RELEASE logs and a nonoverlap assertion are needed.
+- `--demo-conflict DOC_ID`: launches two separate **client processes** concurrently to update the *same* document ID. The gateway acquires the distributed lock (`gateway-8000`) for each update; pair ordered update IDs with leader GRANT/RELEASE logs.
 - `--gateway-host HOST` and `--gateway-port PORT` let the client address an alternate gateway endpoint if the team provides one.
 
 ## Wire contract to agree on with gateway/coordinator teammates
@@ -83,7 +83,7 @@ The enhanced client retains the original `--demo-conflict` command but strengthe
 3. After both writers finish, the parent issues a separate **status** request and confirms every live shard and replica reports `next_update_id` above the higher of the two write IDs and that the three full replicas share the digest from the most recently ordered update.
 4. The optional `--evidence-file logs/m4_conflict_evidence.json` stores the actual gateway responses and a per-check PASS/FAIL summary. The program returns nonzero if the checks fail.
 
-This verifies **client-observed total order and replica agreement** and creates better report evidence. It still **cannot prove mutual exclusion**, because the existing gateway uses only a local `threading.Lock`. The actual distributed mutex protocol and proof of no overlapping GRANTs must be demonstrated on participating server nodes.
+This verifies **client-observed total order and replica agreement** and creates better report evidence. Pair it with the elected leader's `LOCK GRANTED` / `LOCK RELEASED` lines for `gateway-8000` (the gateway acquires the centralized distributed lock around each index update).
 
 The new `--observe-leader 60` command provides a *read-only* observation and post-change search availability test for server-side leader election. It requires the gateway to implement the proposed `coord_status_result` response. It records two real observations with different nonempty leader IDs and verifies a search reply after the change. It does not trigger leader failure, elect a candidate, or prove that the server election algorithm is correct. If the M3 gateway is still in use, it fails immediately with a clear unsupported-status message.
 

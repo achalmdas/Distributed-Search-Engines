@@ -65,9 +65,9 @@ def show_status():
         lock = "holding the lock" if s.get("holding") else "waiting for the lock" if s.get("waiting") else ""
         if s.get("leader") == p:
             holder = s.get("lock_holder")
+            queue = s.get("lock_queue", [])
             lock = (lock + "  " if lock else "") + \
-                f"[coordinator] holder={'index-' + str(holder) if holder else 'none'} " \
-                f"queue={['index-' + str(q) for q in s.get('lock_queue', [])]}"
+                f"[coordinator] holder={holder if holder else 'none'} queue={queue}"
         leader = f"index-{s['leader']}" if s.get("leader") else "none"
         print(f"  index-{p:<5} {s.get('lamport_ts'):<6} {leader:<11} {s.get('term', '-')!s:<5} {lock}")
     agreed = len(leaders) == 1 and None not in leaders

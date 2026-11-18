@@ -14,12 +14,15 @@ Adds three things to the index nodes 8001, 8002 and 8003:
      lock coordinator: lock_request is granted now or queued (FIFO), and on
      lock_release the leader grants the lock to the next node in the queue.
      A new leader asks every node whether it holds or is waiting for the
-     lock, so the lock survives a leader failure.
+     lock, so the lock survives a leader failure. The gateway (port 8000) is
+     also a lock client: it uses lock_acquire (blocking) / lock_release so
+     document updates share the same mutex as the stats file.
 
-  3. The shared resource - shared/search_stats.json. Every search goes to all
-     three shards at once, and each shard records it in this one file (read,
-     modify, write). Without the lock two shards read the same old total and
-     one write is lost; with the lock every write is kept.
+  3. The shared resource - shared/search_stats.json (search counters) and the
+     index-update multicast path. Every search records into the stats file
+     (read, modify, write). Without the lock two shards read the same old
+     total and one write is lost; with the lock every write is kept. Conflicting
+     document updates from the gateway also acquire this lock before multicast.
 
 Every message between nodes carries a Lamport timestamp ("lamport_ts", see
 lamport.py) and every coordination event is logged as "[L=<n>] ...", so the
@@ -32,6 +35,8 @@ Message formats (one JSON object per line, newline-terminated):
   heartbeat    node -> leader       : {"msg_type": "heartbeat", "sender_id": "index-8001", "lamport_ts": 30}
   lock_request node -> leader       : {"msg_type": "lock_request", "sender_id": "index-8001", "lamport_ts": 41}
                leader -> node       : {"msg_type": "lock_granted"} or {"msg_type": "lock_queued", "position": 1}
+  lock_acquire gateway -> leader    : {"msg_type": "lock_acquire", "sender_id": "gateway-8000", "lamport_ts": 41}
+               leader -> gateway    : {"msg_type": "lock_granted"}  (RPC blocks until granted or timeout)
   lock_release node -> leader       : {"msg_type": "lock_release", "sender_id": "index-8001", "lamport_ts": 47}
   lock_grant   leader -> next node  : {"msg_type": "lock_grant", "sender_id": "index-8003", "lamport_ts": 50}
   lock_state   new leader -> node   : {"msg_type": "lock_state"}
@@ -54,6 +59,7 @@ from common.protocol import ProtocolError, request_reply
 # ---------------------------------------------------------------- config
 HOST = "127.0.0.1"
 PEERS = [8001, 8002, 8003]          # every index node; a higher port wins the election
+GATEWAY_PORT = 8000                 # gateway is a lock client (not an election peer)
 RPC_TIMEOUT = 1.0
 HEARTBEAT_EVERY = 1.0
 COORDINATOR_WAIT = 3.0              # how long to wait for a higher node to announce itself
@@ -77,6 +83,7 @@ coordinator_seen = threading.Event()
 
 lock_holder = None                   # lock coordinator state, only used while we are the leader
 lock_queue = deque()
+waiter_events = {}                   # port -> Event for blocking lock_acquire (gateway)
 
 local_mutex = threading.Lock()       # one thread of this node at a time asks for the lock
 holding = False                      # our own lock state as a requester
@@ -89,8 +96,23 @@ def name(port):
 
 
 def sender_port(msg):
-    """"index-8001" -> 8001"""
+    """"index-8001" -> 8001 (election / peer messages only)."""
     return int(msg["sender_id"].rsplit("-", 1)[1])
+
+
+def client_id(msg):
+    """Full lock-client identity (index-8001 or gateway-8000-<token>)."""
+    return msg["sender_id"]
+
+
+def peer_port(ident):
+    """Port for an index lock client, or None for gateway clients."""
+    if isinstance(ident, str) and ident.startswith("index-"):
+        try:
+            return int(ident.rsplit("-", 1)[1])
+        except ValueError:
+            return None
+    return None
 
 
 def event(text, *args, at=None):
@@ -145,11 +167,14 @@ def heartbeat_loop():
                     if leader == current:
                         leader = None
                 start_election(f"leader {name(current)} failed")
-        elif holder not in (None, PORT):
+        elif holder not in (None, name(PORT)):
+            port = peer_port(holder)
+            if port is None:
+                continue                                      # gateway client: no peer heartbeat
             try:                                              # leader: is the lock holder still alive?
-                send(holder, "heartbeat", quiet=True)
+                send(port, "heartbeat", quiet=True)
             except NETWORK_ERRORS:
-                event("LOCK HOLDER %s crashed, taking the lock back", name(holder))
+                event("LOCK HOLDER %s crashed, taking the lock back", holder)
                 release_for(holder)
 
 
@@ -200,19 +225,19 @@ def become_leader():
             continue
         seen_term = max(seen_term, int(reply.get("term", 0)))
         if reply.get("holding"):
-            holder = port
+            holder = name(port)
         elif reply.get("waiting"):
-            queue.append(port)
+            queue.append(name(port))
     with state_lock:
         if holding:
-            holder = PORT
+            holder = name(PORT)
         elif waiting:
-            queue.append(PORT)
+            queue.append(name(PORT))
         leader, lock_holder, lock_queue = PORT, holder, deque(queue)
         term = max(term, seen_term) + 1                       # newer than any term a live node has seen
     event("I AM THE LEADER (%s is the highest live node), term %d", name(PORT), term)
     event("LOCK STATE recovered: holder=%s queue=%s",
-          name(holder) if holder else "none", [name(p) for p in queue])
+          holder if holder else "none", list(queue))
     for port in others():
         try:
             send(port, "coordinator", term=term)
@@ -248,7 +273,7 @@ def on_coordinator(msg):
 # ---------------------------------------------------------------- mutual exclusion: leader side
 def on_lock_request(msg):
     global lock_holder
-    node = sender_port(msg)
+    node = client_id(msg)
     with state_lock:
         if leader != PORT:
             return {"msg_type": "error", "error": "not the leader", "leader": leader}
@@ -260,16 +285,50 @@ def on_lock_request(msg):
                 lock_queue.append(node)
             is_granted, holder, queue = False, lock_holder, list(lock_queue)
     if is_granted:
-        event("LOCK GRANTED to %s", name(node))
+        event("LOCK GRANTED to %s", node)
         return {"msg_type": "lock_granted"}
-    event("LOCK BUSY: held by %s, %s queued (queue=%s)",
-          name(holder), name(node), [name(p) for p in queue])
+    event("LOCK BUSY: held by %s, %s queued (queue=%s)", holder, node, queue)
     return {"msg_type": "lock_queued", "position": queue.index(node) + 1}
 
 
+def on_lock_acquire(msg):
+    """Blocking acquire for external clients (gateway). RPC returns only when granted or timed out."""
+    global lock_holder
+    node = client_id(msg)
+    with state_lock:
+        if leader != PORT:
+            return {"msg_type": "error", "error": "not the leader", "leader": leader}
+        if lock_holder in (None, node):
+            lock_holder = node
+            event("LOCK GRANTED to %s", node)
+            return {"msg_type": "lock_granted"}
+        if node not in lock_queue:
+            lock_queue.append(node)
+        waiter = waiter_events.get(node)
+        if waiter is None:
+            waiter = threading.Event()
+            waiter_events[node] = waiter
+        else:
+            waiter.clear()
+        holder, queue = lock_holder, list(lock_queue)
+    event("LOCK BUSY: held by %s, %s queued (queue=%s)", holder, node, queue)
+    if not waiter.wait(LOCK_TIMEOUT):
+        with state_lock:
+            if lock_holder == node:
+                waiter_events.pop(node, None)
+                return {"msg_type": "lock_granted"}
+            if node in lock_queue:
+                lock_queue.remove(node)
+            waiter_events.pop(node, None)
+        event("LOCK TIMEOUT waiting for %s", node)
+        return {"msg_type": "error", "error": "lock timeout"}
+    waiter_events.pop(node, None)
+    return {"msg_type": "lock_granted"}
+
+
 def on_lock_release(msg):
-    node = sender_port(msg)
-    event("LOCK RELEASED by %s", name(node))
+    node = client_id(msg)
+    event("LOCK RELEASED by %s", node)
     release_for(node)
     return {"msg_type": "ok"}
 
@@ -290,18 +349,28 @@ def grant_next():
             return
         node = lock_queue.popleft()
         lock_holder = node
-    event("LOCK GRANTED to %s (next in queue)", name(node))
-    if node == PORT:
+        waiter = waiter_events.get(node)
+    event("LOCK GRANTED to %s (next in queue)", node)
+    if waiter is not None:
+        waiter.set()
+        return
+    if node == name(PORT):
         granted.set()
         return
-    threading.Thread(target=push_grant, args=(node,), daemon=True).start()
+    port = peer_port(node)
+    if port is None:
+        # Gateway clients only wake via lock_acquire waiters.
+        event("LOCK GRANT: %s has no waiter, taking the lock back", node)
+        release_for(node)
+        return
+    threading.Thread(target=push_grant, args=(port, node), daemon=True).start()
 
 
-def push_grant(node):
+def push_grant(port, node):
     try:
-        send(node, "lock_grant")
+        send(port, "lock_grant")
     except NETWORK_ERRORS:
-        event("LOCK GRANT to %s failed, it is down", name(node))
+        event("LOCK GRANT to %s failed, it is down", node)
         release_for(node)
 
 
@@ -432,7 +501,7 @@ def on_stats_write(msg):
 def on_coord_status(msg):
     with state_lock:
         return {"msg_type": "coord_status_reply", "leader": leader, "term": term, "electing": electing,
-                "resource": os.path.relpath(SHARED_FILE, ROOT),
+                "resource": f"{os.path.relpath(SHARED_FILE, ROOT)}; index updates",
                 "holding": holding, "waiting": waiting,
                 "lock_holder": lock_holder, "lock_queue": list(lock_queue)}
 
@@ -454,6 +523,7 @@ HANDLERS = {
     "coordinator": on_coordinator,
     "heartbeat": on_heartbeat,
     "lock_request": on_lock_request,
+    "lock_acquire": on_lock_acquire,
     "lock_release": on_lock_release,
     "lock_grant": on_lock_grant,
     "lock_state": on_lock_state,

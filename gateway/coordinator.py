@@ -1,17 +1,19 @@
 """
 Group coordinator (runs inside the gateway process)
-CECS 327 - Milestone 2
+CECS 327 - Milestone 2 / Milestone 4
 
 Handles "update" and "status" requests from clients:
 
-  1. assign the next update_id (one coordinator = one total order)
-  2. multicast the update to every member of the group: the 3 index shards
+  1. acquire the distributed lock from the elected index-node leader (M4)
+  2. assign the next update_id (one coordinator = one total order)
+  3. multicast the update to every member of the group: the 3 index shards
      (each stores only its own documents) and the 3 replicas (each stores
      all documents). Members ack; a member that is behind is sent the
      updates it missed, in order (reliable, totally ordered multicast)
-  3. publish the same update as an event on topic "index.updates" (pub-sub)
-  4. compare digests: replicas must match each other, and each shard must
+  4. publish the same update as an event on topic "index.updates" (pub-sub)
+  5. compare digests: replicas must match each other, and each shard must
      match the replicas' digest for that shard
+  6. release the distributed lock
 
 On startup, recover_from_members() asks every live member for its
 next_update_id so a restarted gateway continues the sequence instead of
@@ -26,6 +28,7 @@ import threading
 
 from common.protocol import make_message, request_reply
 import p2p_bridge   # Milestone 3: copy updates into the peer-to-peer overlay
+import coord_bridge  # Milestone 4: distributed lock around index updates
 
 HOST = "127.0.0.1"
 SHARD_PORTS = [8001, 8002, 8003]
@@ -132,35 +135,45 @@ def _check_sync(result):
     return True
 
 
-def handle_update(request):
+def handle_update(request, clock):
     global _next_update_id
     doc = request.get("doc")
     if (not isinstance(doc, dict) or not isinstance(doc.get("doc_id"), int)
             or not isinstance(doc.get("title"), str) or not isinstance(doc.get("body"), str)):
         return {"request_id": request.get("request_id"), "error": "doc needs int doc_id, str title, str body",
                 "error_type": "invalid_request"}
-    with _lock:
-        update_id = _next_update_id
-        _next_update_id += 1
-        msg = make_message("index_update", update_id=update_id, doc=doc)
-        _update_log[update_id] = msg
-        log.info("UPDATE update_id=%d doc_id=%d title=%r -> multicast to %d members",
-                 update_id, doc["doc_id"], doc["title"], len(MEMBERS))
+    # Acquire outside the local lock so concurrent client threads contend on the
+    # elected leader (LOCK GRANTED / LOCK BUSY / queue) instead of only on _lock.
+    holder = coord_bridge.acquire_lock(clock)
+    if not holder:
+        return {"request_id": request.get("request_id"),
+                "error": "could not acquire distributed lock for index update",
+                "error_type": "lock_unavailable"}
+    try:
+        with _lock:
+            update_id = _next_update_id
+            _next_update_id += 1
+            msg = make_message("index_update", update_id=update_id, doc=doc)
+            _update_log[update_id] = msg
+            log.info("UPDATE update_id=%d doc_id=%d title=%r lock=%s -> multicast to %d members",
+                     update_id, doc["doc_id"], doc["title"], holder, len(MEMBERS))
 
-        result, threads = {}, []
-        for port in MEMBERS:
-            t = threading.Thread(target=_send_to_member, args=(port, update_id, result))
-            t.start()
-            threads.append(t)
-        for t in threads:
-            t.join()
+            result, threads = {}, []
+            for port in MEMBERS:
+                t = threading.Thread(target=_send_to_member, args=(port, update_id, result))
+                t.start()
+                threads.append(t)
+            for t in threads:
+                t.join()
 
-        delivered = _publish(update_id, msg)
-        p2p_updated = p2p_bridge.publish_doc(doc)      # Milestone 3: the ring gets the update too
-        in_sync = _check_sync(result)
-        acks = sum(1 for r in result.values() if r["status"] == "ack")
-        log.info("GROUP RESULT update_id=%d acks=%d/%d in_sync=%s event_delivered_to=%d",
-                 update_id, acks, len(MEMBERS), in_sync, delivered)
+            delivered = _publish(update_id, msg)
+            p2p_updated = p2p_bridge.publish_doc(doc)      # Milestone 3: the ring gets the update too
+            in_sync = _check_sync(result)
+            acks = sum(1 for r in result.values() if r["status"] == "ack")
+            log.info("GROUP RESULT update_id=%d acks=%d/%d in_sync=%s event_delivered_to=%d",
+                     update_id, acks, len(MEMBERS), in_sync, delivered)
+    finally:
+        coord_bridge.release_lock(clock, holder)
 
     def slim(port):
         r = dict(result[port]); r.pop("shard_digests", None); return r
@@ -168,7 +181,8 @@ def handle_update(request):
             "owner_shard": SHARD_PORTS[doc["doc_id"] % len(SHARD_PORTS)],
             "shards": {str(p): slim(p) for p in SHARD_PORTS},
             "replicas": {str(p): slim(p) for p in REPLICA_PORTS},
-            "event_delivered_to": delivered, "in_sync": in_sync, "p2p_updated": p2p_updated}
+            "event_delivered_to": delivered, "in_sync": in_sync, "p2p_updated": p2p_updated,
+            "distributed_lock": True}
 
 
 def handle_status(request):
@@ -193,7 +207,7 @@ def handle_status(request):
             "replicas": {str(p): slim(p) for p in REPLICA_PORTS}, "in_sync": in_sync}
 
 
-def handle(request):
+def handle(request, clock):
     if request.get("msg_type") == "update":
-        return handle_update(request)
+        return handle_update(request, clock)
     return handle_status(request)

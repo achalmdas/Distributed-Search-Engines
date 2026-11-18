@@ -281,8 +281,8 @@ def handle_client(client_socket: socket.socket, client_address: tuple[str, int])
                 request_id = raw_request["request_id"]
 
             if raw_request.get("msg_type") in ("update", "status"):
-                # Milestone 2: group communication (updates, replication, status)
-                response = coordinator.handle(raw_request)
+                # Milestone 2: group communication; M4: updates hold the distributed lock
+                response = coordinator.handle(raw_request, clock)
             elif raw_request.get("msg_type") in ("p2p_search", "p2p_ring"):
                 # Milestone 3: lookup and search through the peer-to-peer overlay
                 response = p2p_bridge.handle(raw_request)
