@@ -288,7 +288,7 @@ def handle_client(client_socket: socket.socket, client_address: tuple[str, int])
                 response = p2p_bridge.handle(raw_request)
             elif raw_request.get("msg_type") == "coord_status":
                 # Milestone 4: elected leader and lock state of the index nodes
-                response = coord_bridge.handle_status(raw_request, clock.tick)
+                response = coord_bridge.handle_status(raw_request, clock)
             else:
                 request = validate_client_request(raw_request)
                 request_id = request["request_id"]

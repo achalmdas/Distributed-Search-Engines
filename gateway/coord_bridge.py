@@ -30,16 +30,22 @@ def name(port):
     return f"index-{port}"
 
 
-def handle_status(request, stamp):
-    """Ask every index node for its view; report the leader that the live nodes agree on."""
+def handle_status(request, clock):
+    """Ask every index node for its view; report the leader that the live nodes agree on.
+
+    Advances the gateway Lamport clock on each send (tick) and each reply (receive),
+    matching query_index_node(), so the final client reply stamp is causally after
+    every node timestamp embedded in this response.
+    """
     nodes, views = [], {}
     for port in NODES:
         try:
             r = request_reply(HOST, port, {"msg_type": "coord_status", "sender_id": "gateway-8000",
-                                           "lamport_ts": stamp()}, TIMEOUT)
+                                           "lamport_ts": clock.tick()}, TIMEOUT)
         except (OSError, ValueError) as error:
             nodes.append({"id": name(port), "port": port, "up": False, "error": str(error)})
             continue
+        clock.receive(r.get("lamport_ts"))
         views[port] = r
         nodes.append({"id": name(port), "port": port, "up": True, "leader": r.get("leader"),
                       "term": r.get("term"), "lamport_ts": r.get("lamport_ts"),
